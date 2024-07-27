@@ -8,7 +8,7 @@
 # Description: Build OpenWrt using GitHub Actions
 #
 
-name: Build OpenWrt FOR X86_64
+name: Build OpenWrt for x86/64
 
 on:
   repository_dispatch:
@@ -65,8 +65,29 @@ jobs:
       run: |
         wget -qO- --no-check-certificate https://raw.githubusercontent.com/Kurokosama/serverbench/main/bench.sh | bash
 
-    - name: Clone source code
+    - name: Set Variables
       working-directory: /workdir
+      id: variables
+      run: |
+        echo "release_tag=$(date +"%Y.%m.%d-%H%M")" >> "$GITHUB_OUTPUT"
+        touch release.txt
+
+    - name: Restore cached build sources
+      id: cache-restore
+      uses: buildjet/cache/restore@v3
+      with:
+        path: |
+          openwrt
+        key: openwrt-${{ env.REPO_BRANCH }}
+
+    - name: Update cached repo
+      if: steps.cache-restore.outputs.cache-hit == 'true'
+      run: |
+        cd openwrt
+        git fetch --force
+
+    - name: Clone source code
+      if: steps.cache-restore.outputs.cache-hit != 'true'
       run: |
         df -hT $PWD
         git clone $REPO_URL -b $REPO_BRANCH openwrt
@@ -101,6 +122,15 @@ jobs:
         make download -j8
         find dl -size -1024c -exec ls -l {} \;
         find dl -size -1024c -exec rm -f {} \;
+      timeout-minutes: 7
+
+    - name: Cache build sources
+      uses: buildjet/cache/save@v3
+      id: cache-build
+      with:
+        path: |
+          openwrt
+        key: openwrt-${{ env.REPO_BRANCH }}
 
     - name: Compile the firmware
       id: compile
@@ -108,7 +138,7 @@ jobs:
         cd openwrt
         echo -e "$(nproc) thread compile"
         make -j$(nproc) || make -j1 || make -j1 V=s
-        echo "::set-output name=status::success"
+        echo "status=success" >> "$GITHUB_OUTPUT"
         grep '^CONFIG_TARGET.*DEVICE.*=y' .config | sed -r 's/.*DEVICE_(.*)=y/\1/' > DEVICE_NAME
         [ -s DEVICE_NAME ] && echo "DEVICE_NAME=_$(cat DEVICE_NAME)" >> $GITHUB_ENV
         echo "FILE_DATE=_$(date +"%Y%m%d%H%M")" >> $GITHUB_ENV
@@ -131,36 +161,24 @@ jobs:
         cd openwrt/bin/targets/*/*
         rm -rf packages
         echo "FIRMWARE=$PWD" >> $GITHUB_ENV
-        echo "::set-output name=status::success"
+        echo "status=success" >> "$GITHUB_OUTPUT"
 
     - name: Upload firmware directory
       uses: actions/upload-artifact@main
-      if: steps.organize.outputs.status == 'success' && !cancelled()
+      if: env.UPLOAD_FIRMWARE == 'true' && steps.organize.outputs.status == 'success' && !cancelled()
       with:
         name: OpenWrt_firmware${{ env.DEVICE_NAME }}${{ env.FILE_DATE }}
         path: ${{ env.FIRMWARE }}
 
-    - name: Generate release tag
-      id: tag
-      if: env.UPLOAD_RELEASE == 'true' && !cancelled()
-      run: |
-        echo "::set-output name=release_tag::$(date +"%Y.%m.%d-%H%M")"
-        touch release.txt
-        echo "::set-output name=status::success"
-
     - name: Upload firmware to release
       uses: softprops/action-gh-release@v1
-      if: steps.tag.outputs.status == 'success' && !cancelled()
+      if: steps.compile.outputs.status == 'success' && env.UPLOAD_RELEASE == 'true' && !cancelled()
       env:
         GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
       with:
-        tag_name: ${{ steps.tag.outputs.release_tag }}
+        tag_name: ${{ steps.variables.outputs.release_tag }}
         body_path: release.txt
         files: ${{ env.FIRMWARE }}/*
-
-    - name: Move FIRMWARE
-      run: |
-        mv ${{ env.FIRMWARE }}/openwrt-x86-64-generic-rootfs.tar.gz openwrt.tar.gz
 
     - name: Delete workflow runs
       uses: GitRML/delete-workflow-runs@main
