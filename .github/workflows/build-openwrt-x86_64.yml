@@ -124,6 +124,13 @@ jobs:
         find dl -size -1024c -exec rm -f {} \;
       timeout-minutes: 7
 
+    - name: Compile prepare
+      id: compile
+      run: |
+        cd openwrt
+        echo -e "$(nproc) thread compile"
+        make -j$(nproc) prepare || make -j1 prepare || make -j1 prepare V=s 
+
     - name: Cache build sources
       uses: buildjet/cache/save@v3
       id: cache-build
